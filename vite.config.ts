@@ -4,6 +4,11 @@ import tailwindcss from "@tailwindcss/vite";
 import babel from "@rolldown/plugin-babel";
 import path from "node:path";
 
+function normalizeBase(raw: string | undefined): string {
+  if (!raw || raw === "/") return "/";
+  return raw.endsWith("/") ? raw : `${raw}/`;
+}
+
 function defineAppConfig() {
   return {
     BASE_URL: "http://localhost:3000",
@@ -31,6 +36,7 @@ function injectRouterAppConfigDev(): Plugin {
 // https://vite.dev/config/
 export default defineConfig(() => {
   return {
+    base: normalizeBase(process.env.VITE_BASE_URL),
     plugins: [
       injectRouterAppConfigDev(),
       react(),
