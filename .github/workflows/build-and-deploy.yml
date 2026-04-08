@@ -1,0 +1,104 @@
+name: Build and Deploy to OSS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      # 👇 在这里配置你的应用名
+      APP_NAME: frontend-config
+      # 仅新建 app 时传给 deploy 接口；不需要则留空
+      DEPLOY_DOMAIN: ""
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 👇 生成自增版本号（每次CI自动 +1）
+      - name: Generate build version
+        id: version
+        run: |
+          echo "version=${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      # 在同一 shell 里 export VITE_BASE_URL 再执行 vite，确保 Node 进程能读到；
+      # 仅用 job env 传 steps 输出时，长 URL 或空 BASE_URL 也容易踩坑。
+      - name: Build
+        env:
+          BASE_ROOT: ${{ vars.BASE_URL }}
+          APP_NAME: ${{ env.APP_NAME }}
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+          ROOT="${BASE_ROOT%/}"
+          if [ -n "$ROOT" ]; then
+            export VITE_BASE_URL="${ROOT}/${APP_NAME}/${BUILD_VERSION}/"
+          else
+            export VITE_BASE_URL="/${APP_NAME}/${BUILD_VERSION}/"
+          fi
+          echo "VITE_BASE_URL=$VITE_BASE_URL"
+          pnpm build
+
+      - name: Deploy to OSS
+        env:
+          OSS_REGION: ${{ secrets.OSS_REGION }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          OSS_ACCESS_KEYID: ${{ secrets.OSS_ACCESS_KEYID }}
+          OSS_ACCESS_KEYSECRECT: ${{ secrets.OSS_ACCESS_KEYSECRECT }}
+          OSS_OBJECT_PREFIX: ${{ env.APP_NAME }}/${{ steps.version.outputs.version }}
+        run: node scripts/deploy-oss.mjs
+
+      # POST DeployAppDto；id 固定为 job 的 APP_NAME；note 来自本次 push 的 commit
+      - name: Notify deploy API
+        env:
+          DEPLOY_API_URL: ${{ vars.DEPLOY_API_URL }}
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          APP_NAME: ${{ env.APP_NAME }}
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+          BASE_ROOT: ${{ vars.BASE_URL }}
+        run: |
+          set -e
+          if [ -z "${DEPLOY_API_URL}" ]; then
+            echo "Error: 请配置仓库 Variables：DEPLOY_API_URL"
+            exit 1
+          fi
+          ROOT="${BASE_ROOT%/}"
+          if [ -z "$ROOT" ]; then
+            echo "Error: 需要配置 vars.BASE_URL 以生成 ossIndexUrl"
+            exit 1
+          fi
+          OSS_INDEX_URL="${ROOT}/${APP_NAME}/${BUILD_VERSION}/index.html"
+          COMMIT_SUBJECT="$(printf '%s\n' "${HEAD_COMMIT_MESSAGE:-}" | head -n1 | tr -d '\r')"
+          NOTE="[${GITHUB_SHA:0:7}] run=${GITHUB_RUN_NUMBER} ${COMMIT_SUBJECT}"
+          DOMAIN="${DEPLOY_DOMAIN:-}"
+          # version 必须是 JSON number：用 --argjson，不要用 string 再 tonumber
+          BODY=$(jq -n \
+            --arg id "$APP_NAME" \
+            --argjson version "$BUILD_VERSION" \
+            --arg ossIndexUrl "$OSS_INDEX_URL" \
+            --arg note "$NOTE" \
+            --arg domain "$DOMAIN" \
+            '{id:$id,version:$version,ossIndexUrl:$ossIndexUrl} + (if ($note|length)>0 then {note:$note} else {} end) + (if ($domain|length)>0 then {domain:$domain} else {} end)')
+          echo "POST ${DEPLOY_API_URL}"
+          echo "body: ${BODY}"
+          curl -sS -f -X POST "${DEPLOY_API_URL}" \
+            -H "Content-Type: application/json" \
+            -d "${BODY}"
+          echo ""

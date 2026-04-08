@@ -1,8 +1,9 @@
 import axios, { type AxiosRequestConfig } from "axios";
 import { message } from "antd";
+import { getAppConfig } from "../utils";
 
 export const client = axios.create({
-  baseURL: "http://localhost:3000",
+  baseURL: getAppConfig().BASE_URL,
 });
 
 const messageList = [
