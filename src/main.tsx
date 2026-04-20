@@ -9,9 +9,7 @@ import "./main.css";
 
 const routes = initRoutes();
 console.log(routes);
-const router = createBrowserRouter(routes, {
-  basename: "/config",
-});
+const router = createBrowserRouter(routes);
 
 function ErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
   useMount(() => {
